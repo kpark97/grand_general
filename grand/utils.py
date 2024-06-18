@@ -166,6 +166,87 @@ def add_ghosts(topology, positions, ff='tip3p', n=10, pdb='gcmc-extra-wats.pdb')
 
     return modeller.topology, modeller.positions, ghosts
 
+def add_ghosts_fragment(topology, positions, fragment, n=10, pdb='gcmc-extra-mols.pdb'):
+    """
+    Function to add water molecules to a topology, as extras for GCMC
+    This is to avoid changing the number of particles throughout a simulation
+    Instead, we can just switch between 'ghost' and 'real' waters...
+
+    Notes
+    -----
+    Ghosts currently all added to a new chain
+    Residue numbering continues from the existing PDB numbering
+
+    Parameters
+    ----------
+    topology : simtk.openmm.app.Topology
+        Topology of the initial system
+    positions : simtk.unit.Quantity
+        Atomic coordinates of the initial system
+    fragment : openmm.app.Topology
+        Topology of the fragment to add
+    n : int
+        Number of fragments to add to the system
+    pdb : str
+        Name of the PDB file to write containing the updated system
+        This will be useful for visualising the results obtained.
+
+    Returns
+    -------
+    modeller.topology : simtk.openmm.app.Topology
+        Topology of the system after modification
+    modeller.positions : simtk.unit.Quantity
+        Atomic positions of the system after modification
+    ghosts : list
+        List of the residue numbers (counting from 0) of the ghost
+        fragments added to the system.
+    """
+    # Create a Modeller instance of the system
+    modeller = app.Modeller(topology=topology, positions=positions)
+
+    # Read the chain IDs
+    chain_ids = []
+    for chain in modeller.topology.chains():
+        chain_ids.append(chain.id)
+
+    # Read in simulation box size
+    box_vectors = topology.getPeriodicBoxVectors()
+    box_size = np.array([box_vectors[0][0]._value,
+                         box_vectors[1][1]._value,
+                         box_vectors[2][2]._value]) * unit.nanometer
+
+    # Add multiple copies of the same water, then write out a pdb (for visualisation)
+    ghosts = []
+    for i in range(n):
+        # Read in template water positions
+        positions = fragment.positions
+
+        # Need to translate the water to a random point in the simulation box
+        new_centre = np.random.rand(3) * box_size
+        new_positions = deepcopy(fragment.positions)
+        for i in range(len(positions)):
+            new_positions[i] = positions[i] + new_centre - positions[0]
+
+        # Add the water to the model and include the resid in a list
+        modeller.add(addTopology=fragment.topology, addPositions=new_positions)
+        ghosts.append(modeller.topology._numResidues - 1)
+
+    # Take the ghost chain as the one after the last chain (alphabetically)
+    new_chain = chr(((ord(chain_ids[-1]) - 64) % 26) + 65)
+
+    # Renumber all ghost waters and assign them to the new chain
+    for resid, residue in enumerate(modeller.topology.residues()):
+        if resid in ghosts:
+            residue.id = str(((resid - 1) % 9999) + 1)
+            residue.chain.id = new_chain
+
+    # Write the new topology and positions to a PDB file
+    if pdb is not None:
+        with open(pdb, 'w') as f:
+            app.PDBFile.writeFile(topology=modeller.topology, positions=modeller.positions, file=f, keepIds=True)
+
+    return modeller.topology, modeller.positions, ghosts
+
 
 def remove_ghosts(topology, positions, ghosts=None, pdb='gcmc-removed-ghosts.pdb'):
     """
